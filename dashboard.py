@@ -9,8 +9,8 @@ import plotly.express as px
 st.set_page_config(page_title="Dashboard PDAM - Subzona 215", layout="wide")
 
 # --- HEADER ---
-st.markdown("<h1 style='text-align: center;'>📊 Executive Dashboard PDAM - Subzona 215</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center;'>Analisis Spasio-Temporal, Clustering, & Pendapatan Pelanggan</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>💧 DASHBOARD INTERAKTIF PDAM - SUBZONA 215</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center;'>PENGEMBANGAN INTERAKTIF DASHBOARD BERBASIS STREAMLIT UNTUK ANALISIS SPASIO-TEMPORAL DAN SEGMENTASI PELANGGAN PDAM MENGGUNAKAN K-MEANS CLUSTERING</p>", unsafe_allow_html=True)
 st.divider()
 
 # --- LOAD DATA ---
