@@ -1,160 +1,238 @@
 import streamlit as st
 import pandas as pd
-import folium
-from streamlit_folium import st_folium
-from folium.plugins import HeatMap
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import os
 
+# ==========================================
+# 1. KONFIGURASI HALAMAN
+# ==========================================
 st.set_page_config(page_title="Dashboard PDAM - Subzona 215", layout="wide")
 
-# --- HEADER ---
-st.markdown("<h1 style='text-align: center;'>💧 DASHBOARD INTERAKTIF PDAM - SUBZONA 215</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center;'>PENGEMBANGAN INTERAKTIF DASHBOARD BERBASIS STREAMLIT UNTUK ANALISIS SPASIO-TEMPORAL DAN SEGMENTASI PELANGGAN PDAM MENGGUNAKAN K-MEANS CLUSTERING</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #2c3e50;'>💧 Interaktif Dashboard PDAM - Subzona 215</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #7f8c8d;'>Komparasi Geospasial: Volume Air (m³) vs Tagihan (Rp)</p>", unsafe_allow_html=True)
 st.divider()
 
-# --- LOAD DATA ---
+# ==========================================
+# 2. LOAD DATA & FORMATTING
+# ==========================================
 @st.cache_data
 def load_data():
-    df = pd.read_csv("Hasil_Clustering_Subzona_215.csv")
+    # Menggunakan file hasil pipeline terakhir
+    # Pastikan file ini ada di direktori yang sama dengan skrip ini
+    try:
+        df = pd.read_csv("Data_Siap_Clustering_Final3.csv") 
+    except FileNotFoundError:
+        # Dummy data jika file tidak ditemukan untuk keperluan testing
+        return pd.DataFrame()
+
     df['THBL'] = df['THBL'].astype(str)
-    df['TAHUN'] = df['THBL'].str[:4] # Ekstraksi Tahun
-    df['BULAN'] = df['THBL'].str[4:] # Ekstraksi Bulan
+    df['TAHUN'] = df['THBL'].str[:4]
+    df['BULAN_ANGKA'] = df['THBL'].str[4:]
     
-    # Efek Jittering untuk Peta
+    bulan_indo = {
+        '01': 'Januari', '02': 'Februari', '03': 'Maret', '04': 'April',
+        '05': 'Mei', '06': 'Juni', '07': 'Juli', '08': 'Agustus',
+        '09': 'September', '10': 'Oktober', '11': 'November', '12': 'Desember'
+    }
+    
+    df['NAMA_BULAN'] = df['BULAN_ANGKA'].map(bulan_indo) + " " + df['TAHUN']
+    
     df['Lat_Jitter'] = df['Latitude'] + np.random.uniform(-0.0005, 0.0005, len(df))
     df['Lon_Jitter'] = df['Longitude'] + np.random.uniform(-0.0005, 0.0005, len(df))
     return df
 
 df = load_data()
 
-# --- SIDEBAR (KONTROL PANEL) ---
-st.sidebar.header("🕹️ Filter & Kontrol")
+# Proteksi jika dataframe kosong
+if df.empty:
+    st.error("File 'Data_Siap_Clustering_Final3.csv' tidak ditemukan. Pastikan file tersedia.")
+    st.stop()
 
-# 1. Filter Periode (Bisa Tahunan / Bulanan)
-jenis_periode = st.sidebar.radio("Pilih Mode Waktu:", ["Rekap Tahunan", "Detail Bulanan"])
+# ==========================================
+# 3. SIDEBAR (LOGOS & FILTER)
+# ==========================================
 
-if jenis_periode == "Rekap Tahunan":
+# --- LOGO ATAS (PDAM) ---
+if os.path.exists("pdam-surabaya.png"):
+    st.sidebar.image("pdam-surabaya.png", use_container_width=True)
+
+st.sidebar.divider()
+
+# --- KONTROL PANEL / FILTER ---
+st.sidebar.header("🕹️ Filter Waktu")
+jenis_periode = st.sidebar.radio("Pilih Mode Waktu:", ["Semua Waktu (Default)", "Filter per Tahun", "Filter per Bulan"])
+
+if jenis_periode == "Semua Waktu (Default)":
+    df_filtered = df.groupby(['JALAN', 'Latitude', 'Longitude', 'Lat_Jitter', 'Lon_Jitter']).agg({
+        'TOTAL_PAKAI': 'sum',
+        'TOTAL_RP': 'sum',
+        'JUMLAH_PELANGGAN': 'mean'
+    }).reset_index()
+    label_waktu = "Semua Periode (2024 - 2026)"
+
+elif jenis_periode == "Filter per Tahun":
     pilih_waktu = st.sidebar.selectbox("Pilih Tahun:", sorted(df['TAHUN'].unique(), reverse=True))
-    # Agregasi data jika tahunan (dijumlahkan per jalan)
     df_temp = df[df['TAHUN'] == pilih_waktu]
     df_filtered = df_temp.groupby(['JALAN', 'Latitude', 'Longitude', 'Lat_Jitter', 'Lon_Jitter']).agg({
         'TOTAL_PAKAI': 'sum',
         'TOTAL_RP': 'sum',
-        'JUMLAH_PELANGGAN': 'mean',
-        'CLUSTER': lambda x: x.mode()[0] # Ambil cluster yang paling sering muncul
+        'JUMLAH_PELANGGAN': 'mean'
     }).reset_index()
     label_waktu = f"Tahun {pilih_waktu}"
-else:
-    pilih_waktu = st.sidebar.selectbox("Pilih Bulan Tagihan (THBL):", sorted(df['THBL'].unique(), reverse=True))
-    df_filtered = df[df['THBL'] == pilih_waktu]
-    label_waktu = f"Bulan {pilih_waktu}"
 
-st.sidebar.divider()
+else: 
+    bulan_sorted = df[['THBL', 'NAMA_BULAN']].drop_duplicates().sort_values(by='THBL', ascending=False)['NAMA_BULAN']
+    pilih_waktu = st.sidebar.selectbox("Pilih Bulan Tagihan:", bulan_sorted)
+    df_filtered = df[df['NAMA_BULAN'] == pilih_waktu]
+    label_waktu = f"{pilih_waktu}"
 
-# 2. Filter Variabel Analisis
-st.sidebar.markdown("**Target Analisis Utama**")
-var_analisis = st.sidebar.radio("Fokuskan Metrik Pada:", ["Volume Air (m³)", "Pendapatan (Rp)"])
+# Hitung Harga per m3 dinamis
+df_filtered['HARGA_PER_M3'] = np.where(df_filtered['TOTAL_PAKAI'] > 0, df_filtered['TOTAL_RP'] / df_filtered['TOTAL_PAKAI'], 0)
 
-# 3. Mode Peta
-mode_peta = st.sidebar.radio("Mode Tampilan Peta:", ["Cluster Markers", "Heatmap (Kepadatan)"])
+# --- BAGIAN TIPS DENGAN HYPERLINK PDF ---
+st.sidebar.info("💡 **Tips:**")
+st.sidebar.markdown("""
+- **Zoom:** Scroll mouse.
+- **Geser:** Klik & tarik.
+- <a href='https://drive.google.com/file/d/1uRwUfXgt6NNKbcfpRixEp9eV65G85XMG/view?usp=sharing' target='_blank' style='color: #0000FF; text-decoration: underline; font-weight: bold;'>Petunjuk Penggunaan</a>
+""", unsafe_allow_html=True)
 
-# --- PENGATURAN WARNA & SATUAN ---
-if var_analisis == "Volume Air (m³)":
-    kolom_target = 'TOTAL_PAKAI'
-    satuan = 'm³'
-    warna_utama = '#3498db'
-else:
-    kolom_target = 'TOTAL_RP'
-    satuan = 'Rp'
-    warna_utama = '#2ecc71'
+# --- LOGO BAWAH (ITS & STATISTIKA) ---
+st.sidebar.markdown("<br><br>", unsafe_allow_html=True) 
+col_l1, col_l2 = st.sidebar.columns(2)
+with col_l1:
+    if os.path.exists("Badge_ITS.png"):
+        st.image("Badge_ITS.png", use_container_width=True)
+with col_l2:
+    if os.path.exists("logo-statistika-white-border.png"):
+        st.image("logo-statistika-white-border.png", use_container_width=True)
 
-warna_cluster = {0: '#3498db', 1: '#2ecc71', 2: '#f1c40f', 3: '#e74c3c'}
-warna_cluster_plotly = {'0': '#3498db', '1': '#2ecc71', '2': '#f1c40f', '3': '#e74c3c'}
-df_filtered['CLUSTER_STR'] = df_filtered['CLUSTER'].astype(str) # Untuk Plotly
+# ==========================================
+# 4. TOP METRICS
+# ==========================================
+total_pakai = df_filtered['TOTAL_PAKAI'].sum()
+total_rp = df_filtered['TOTAL_RP'].sum()
+rata_harga = total_rp / total_pakai if total_pakai > 0 else 0
 
-# --- TOP METRICS (ANGKA KINERJA) ---
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-col_m1.metric("💧 Total Volume Air", f"{int(df_filtered['TOTAL_PAKAI'].sum()):,} m³")
-col_m2.metric("💰 Total Pendapatan", f"Rp {int(df_filtered['TOTAL_RP'].sum()):,}".replace(',', '.'))
-col_m3.metric("👥 Rata-rata Pelanggan Aktif", f"{int(df_filtered['JUMLAH_PELANGGAN'].sum()):,}")
-col_m4.metric(f"📊 Rata-rata {var_analisis} per Jalan", f"{int(df_filtered[kolom_target].mean()):,}".replace(',', '.') + f" {satuan}")
+col_m1.metric("💧 Total Volume Air", f"{int(total_pakai):,} m³".replace(',', '.'))
+col_m2.metric("💰 Total Tagihan", f"Rp {int(total_rp):,}".replace(',', '.'))
+col_m3.metric("👥 Rata-rata Pelanggan Aktif", f"{int(df_filtered['JUMLAH_PELANGGAN'].sum()):,}".replace(',', '.'))
+col_m4.metric("🏷️ Harga Rata-rata / m³", f"Rp {int(rata_harga):,}".replace(',', '.'))
 
-# --- PETA & TABEL TOP 10 ---
 st.divider()
-st.subheader(f"🗺️ Peta Distribusi {var_analisis} - {label_waktu}")
 
-m = folium.Map(location=[-7.285, 112.796], zoom_start=14, tiles="CartoDB dark_matter")
+# ==========================================
+# 5. DUAL MAPS (LIGHT MODE)
+# ==========================================
+st.subheader(f"🗺️ Peta Komparasi Interaktif ({label_waktu})")
+map_col1, map_col2 = st.columns(2)
 
-if mode_peta == "Cluster Markers":
-    for _, row in df_filtered.iterrows():
-        # Dinamis: Ukuran lingkaran
-        if kolom_target == 'TOTAL_PAKAI':
-            radius_size = min(max(row['TOTAL_PAKAI'] / (1000 if jenis_periode=="Rekap Tahunan" else 200), 4), 20)
-        else:
-            radius_size = min(max(row['TOTAL_RP'] / (5000000 if jenis_periode=="Rekap Tahunan" else 1000000), 4), 20)
-            
-        rp_format = f"Rp {int(row['TOTAL_RP']):,}".replace(',', '.')
-        folium.CircleMarker(
-            location=[row['Lat_Jitter'], row['Lon_Jitter']],
-            radius=radius_size,
-            color=warna_cluster.get(row['CLUSTER'], 'white'),
-            fill=True, fill_opacity=0.7,
-            popup=f"<b>{row['JALAN']}</b><br>Pakai: {row['TOTAL_PAKAI']} m³<br>Tagihan: {rp_format}<br>Cluster: {row['CLUSTER']}"
-        ).add_to(m)
-else:
-    max_val = df_filtered[kolom_target].max()
-    heat_data = [[row['Latitude'], row['Longitude'], row[kolom_target]/max_val] for _, row in df_filtered.iterrows()]
-    HeatMap(heat_data, radius=20, blur=15).add_to(m)
+hover_konf = {"Lat_Jitter": False, "Lon_Jitter": False, "TOTAL_PAKAI": True, "TOTAL_RP": True, "HARGA_PER_M3": ":.0f"}
 
-c1, c2 = st.columns([2.5, 1.5])
+with map_col1:
+    st.markdown("<h4 style='text-align: center; color: #3498db;'>💧 Distribusi Volume Air (m³)</h4>", unsafe_allow_html=True)
+    fig_map1 = px.scatter_mapbox(df_filtered, lat="Lat_Jitter", lon="Lon_Jitter", color='TOTAL_PAKAI', size='TOTAL_PAKAI',
+                                 color_continuous_scale=["#2ecc71", "#f1c40f", "#e74c3c"], hover_name="JALAN",          
+                                 hover_data=hover_konf, zoom=13.5, center={"lat": -7.285, "lon": 112.796}, 
+                                 mapbox_style="carto-positron", labels={'TOTAL_PAKAI': 'm³', 'HARGA_PER_M3': 'Rp/m³'})
+    fig_map1.update_layout(separators=",.", margin={"r":0,"t":0,"l":0,"b":0}, 
+                           coloraxis_colorbar=dict(title="<b>m³</b>", thickness=10, tickformat=",.0f"))
+    st.plotly_chart(fig_map1, use_container_width=True, config={'scrollZoom': True})
+
+with map_col2:
+    st.markdown("<h4 style='text-align: center; color: #2ecc71;'>💰 Distribusi Tagihan (Rp)</h4>", unsafe_allow_html=True)
+    fig_map2 = px.scatter_mapbox(df_filtered, lat="Lat_Jitter", lon="Lon_Jitter", color='TOTAL_RP', size='TOTAL_RP',
+                                 color_continuous_scale=["#2ecc71", "#f1c40f", "#e74c3c"], hover_name="JALAN",          
+                                 hover_data=hover_konf, zoom=13.5, center={"lat": -7.285, "lon": 112.796}, 
+                                 mapbox_style="carto-positron", labels={'TOTAL_RP': 'Rp', 'HARGA_PER_M3': 'Rp/m³'})
+    fig_map2.update_layout(separators=",.", margin={"r":0,"t":0,"l":0,"b":0}, 
+                           coloraxis_colorbar=dict(title="<b>Rp</b>", thickness=10, tickformat=",.0f"))
+    st.plotly_chart(fig_map2, use_container_width=True, config={'scrollZoom': True})
+
+# ==========================================
+# 6. TABEL & GRAFIK (TOP 10 & TOP 5)
+# ==========================================
+st.divider()
+st.subheader(f"🏆 Peringkat Kinerja Jalan ({label_waktu})")
+
+df_tabel = df_filtered.groupby('JALAN')[['TOTAL_PAKAI', 'TOTAL_RP']].sum().reset_index()
+df_tabel['HARGA_PER_M3'] = np.where(df_tabel['TOTAL_PAKAI'] > 0, df_tabel['TOTAL_RP'] / df_tabel['TOTAL_PAKAI'], 0)
+
+df_tabel_manusia = df_tabel.rename(columns={
+    'JALAN': 'Nama Jalan',
+    'TOTAL_PAKAI': 'Volume Air (m³)',
+    'TOTAL_RP': 'Total Tagihan (Rp)',
+    'HARGA_PER_M3': 'Harga per m³ (Rp)'
+})
+
+c1, c2, c3, c4 = st.columns([1, 1.5, 1, 1.5])
+
 with c1:
-    st_folium(m, width="100%", height=450)
+    st.markdown("**Top 10 Volume Air**")
+    df_top_p = df_tabel_manusia[['Nama Jalan', 'Volume Air (m³)']].sort_values(by='Volume Air (m³)', ascending=False).head(10)
+    df_top_p_disp = df_top_p.copy()
+    df_top_p_disp['Volume Air (m³)'] = df_top_p_disp['Volume Air (m³)'].apply(lambda x: f"{int(x):,}".replace(',', '.'))
+    st.dataframe(df_top_p_disp, hide_index=True, use_container_width=True)
+
 with c2:
-    st.write(f"🏆 **Top 10 Jalan Tertinggi ({label_waktu})**")
-    df_top = df_filtered[['JALAN', 'TOTAL_PAKAI', 'TOTAL_RP']].sort_values(by=kolom_target, ascending=False).head(10)
-    st.dataframe(df_top, hide_index=True, height=400)
+    fig_p = px.bar(df_tabel.sort_values(by='TOTAL_PAKAI', ascending=False).head(5).sort_values(by='TOTAL_PAKAI', ascending=True), 
+                   x='TOTAL_PAKAI', y='JALAN', orientation='h', text='TOTAL_PAKAI', 
+                   color_discrete_sequence=['#3498db'],
+                   labels={'TOTAL_PAKAI': 'Volume Air (m³)', 'JALAN': 'Jalan'})
+    fig_p.update_traces(texttemplate='%{text:,.0f} m³', textposition='inside')
+    fig_p.update_layout(separators=",.", height=350, margin=dict(l=0, r=0, t=10, b=0), yaxis_title="", xaxis_title="")
+    st.plotly_chart(fig_p, use_container_width=True)
 
-# --- VISUALISASI INSIGHT MENDALAM ---
+with c3:
+    st.markdown("**Top 10 Total Tagihan**")
+    df_top_r = df_tabel_manusia[['Nama Jalan', 'Total Tagihan (Rp)']].sort_values(by='Total Tagihan (Rp)', ascending=False).head(10)
+    df_top_r_disp = df_top_r.copy()
+    df_top_r_disp['Total Tagihan (Rp)'] = df_top_r_disp['Total Tagihan (Rp)'].apply(lambda x: f"Rp {int(x):,}".replace(',', '.'))
+    st.dataframe(df_top_r_disp, hide_index=True, use_container_width=True)
+
+with c4:
+    fig_r = px.bar(df_tabel.sort_values(by='TOTAL_RP', ascending=False).head(5).sort_values(by='TOTAL_RP', ascending=True), 
+                   x='TOTAL_RP', y='JALAN', orientation='h', text='TOTAL_RP', 
+                   color_discrete_sequence=['#2ecc71'],
+                   labels={'TOTAL_RP': 'Total Tagihan (Rp)', 'JALAN': 'Jalan'})
+    fig_r.update_traces(texttemplate='Rp %{text:,.0f}', textposition='inside')
+    fig_r.update_layout(separators=",.", height=350, margin=dict(l=0, r=0, t=10, b=0), yaxis_title="", xaxis_title="")
+    st.plotly_chart(fig_r, use_container_width=True)
+
+st.markdown("<br><h4 style='color: #9b59b6;'>🏷️ Analisis Rasio: Harga Air per m³ Tertinggi</h4>", unsafe_allow_html=True)
+col_t_h, col_b_h = st.columns([1, 1.5])
+
+with col_t_h:
+    st.markdown("**Top 10 Harga per m³**")
+    df_top_h = df_tabel_manusia[['Nama Jalan', 'Harga per m³ (Rp)']].sort_values(by='Harga per m³ (Rp)', ascending=False).head(10)
+    df_top_h_disp = df_top_h.copy()
+    df_top_h_disp['Harga per m³ (Rp)'] = df_top_h_disp['Harga per m³ (Rp)'].apply(lambda x: f"Rp {int(x):,}".replace(',', '.'))
+    st.dataframe(df_top_h_disp, hide_index=True, use_container_width=True)
+
+with col_b_h:
+    fig_h = px.bar(df_tabel.sort_values(by='HARGA_PER_M3', ascending=False).head(5).sort_values(by='HARGA_PER_M3', ascending=True), 
+                   x='HARGA_PER_M3', y='JALAN', orientation='h', text='HARGA_PER_M3', 
+                   color_discrete_sequence=['#9b59b6'],
+                   labels={'HARGA_PER_M3': 'Harga per m³ (Rp)', 'JALAN': 'Jalan'})
+    fig_h.update_traces(texttemplate='Rp %{text:,.0f}', textposition='inside')
+    fig_h.update_layout(separators=",.", height=350, margin=dict(l=0, r=0, t=10, b=0), yaxis_title="", xaxis_title="")
+    st.plotly_chart(fig_h, use_container_width=True)
+
+# ==========================================
+# 7. TREN HISTORIS
+# ==========================================
 st.divider()
-st.subheader("💡 Eksplorasi Insight & Statistik Mendalam")
-
-# Baris Grafik 1
-tab1, tab2 = st.columns(2)
-
-with tab1:
-    st.markdown("**1. Korelasi Volume Air vs Tagihan Rupiah**")
-    st.caption("Melihat apakah tarif progresif berjalan normal atau ada anomali pencatatan.")
-    fig_scatter = px.scatter(df_filtered, x='TOTAL_PAKAI', y='TOTAL_RP', 
-                             color='CLUSTER_STR', size='JUMLAH_PELANGGAN', 
-                             hover_name='JALAN', color_discrete_map=warna_cluster_plotly)
-    fig_scatter.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
-with tab2:
-    st.markdown(f"**2. Komposisi {var_analisis} per Cluster**")
-    st.caption("Mengetahui klaster mana penyumbang beban/pendapatan terbesar.")
-    fig_pie = px.pie(df_filtered, names='CLUSTER_STR', values=kolom_target, hole=0.4,
-                     color='CLUSTER_STR', color_discrete_map=warna_cluster_plotly)
-    fig_pie.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-    st.plotly_chart(fig_pie, use_container_width=True)
-
-# Baris Grafik 2
-tab3, tab4 = st.columns(2)
-
-with tab3:
-    st.markdown("**3. Tren Historis Keseluruhan Subzona 215**")
-    st.caption("Pergerakan tren dari waktu ke waktu.")
-    # Agregasi berdasar THBL asli untuk Line chart
-    df_trend = df.groupby('THBL')[kolom_target].sum().reset_index()
-    fig_trend = px.line(df_trend, x='THBL', y=kolom_target, markers=True, color_discrete_sequence=[warna_utama])
-    fig_trend.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-    st.plotly_chart(fig_trend, use_container_width=True)
-
-with tab4:
-    st.markdown(f"**4. Distribusi Anomali (Outlier) {var_analisis}**")
-    st.caption("Mendeteksi jalan yang pemakaian/tagihannya tidak wajar dalam klasternya.")
-    fig_box = px.box(df_filtered, x='CLUSTER_STR', y=kolom_target, color='CLUSTER_STR', 
-                     color_discrete_map=warna_cluster_plotly)
-    fig_box.update_layout(height=350, margin=dict(l=0, r=0, t=20, b=0))
-    st.plotly_chart(fig_box, use_container_width=True)
+st.subheader("💡 Eksplorasi Tren Historis")
+df_tr = df.groupby('THBL')[['TOTAL_PAKAI', 'TOTAL_RP']].sum().reset_index()
+df_tr['Bulan_Tahun'] = pd.to_datetime(df_tr['THBL'], format='%Y%m')
+fig_tr = make_subplots(specs=[[{"secondary_y": True}]])
+fig_tr.add_trace(go.Scatter(x=df_tr['Bulan_Tahun'], y=df_tr['TOTAL_PAKAI'], name="Volume Air (m³)", mode='lines+markers', line=dict(color='#3498db', width=3)), secondary_y=False)
+fig_tr.add_trace(go.Scatter(x=df_tr['Bulan_Tahun'], y=df_tr['TOTAL_RP'], name="Tagihan (Rp)", mode='lines+markers', line=dict(color='#2ecc71', width=3)), secondary_y=True)
+fig_tr.update_layout(separators=",.", height=400, margin=dict(l=0, r=0, t=10, b=0), hovermode="x unified", xaxis=dict(dtick="M3", tickformat="%b %Y"))
+fig_tr.update_yaxes(title_text="Volume Air (m³)", secondary_y=False, tickformat=",.0f")
+fig_tr.update_yaxes(title_text="Tagihan (Rp)", secondary_y=True, tickformat=",.0f")
+st.plotly_chart(fig_tr, use_container_width=True)
